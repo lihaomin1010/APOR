@@ -105,12 +105,11 @@ def main(args):
 
     # train por
     else:
-        if args.load_value_path != "":
-            por.load_value(args.load_value_path)
         algo_name = f"{args.type}_tau-{args.tau}_alpha-{args.alpha}_normalize-{args.normalize}"
         os.makedirs(f"{args.log_dir}/{args.env_name}/{algo_name}", exist_ok=True)
         eval_log = open(f"{args.log_dir}/{args.env_name}/{algo_name}/seed-{args.seed}.txt", 'w')
-
+        if args.load_pretrain:
+            por.load_value(f"{args.model_dir}/{args.env_name}/{algo_name}")
         for step in trange(args.train_steps):
             por.por_value_update(**sample_batch(dataset, args.batch_size))
             por.por_policy_update(**sample_batch(dataset, args.batch_size))
@@ -121,6 +120,7 @@ def main(args):
         eval_log.close()
         os.makedirs(f"{args.model_dir}/{args.env_name}", exist_ok=True)
         por.save(f"{args.model_dir}/{args.env_name}/{algo_name}")
+        por.save_value(f"{args.model_dir}/{args.env_name}/{algo_name}")
 
 
 if __name__ == '__main__':
@@ -148,7 +148,7 @@ if __name__ == '__main__':
     parser.add_argument("--layer_norm", action='store_true')
     parser.add_argument("--type", type=str, choices=['por_r', 'por_q'], default='new_por')
     parser.add_argument("--pretrain", action='store_true')
-    parser.add_argument("--load_value_path", type=str, default="")
+    parser.add_argument("--load_pretrain", action='store_true')
     # parser.add_argument("--ablation_type", type=str, required=True, choices=['None', 'generlization'])
     now = time.strftime("%Y%m%d_%H%M%S", time.localtime())
     args = parser.parse_args()

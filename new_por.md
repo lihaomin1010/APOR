@@ -36,7 +36,7 @@ python main_por.py --env_name hopper-medium-expert-v2 --type por_r --tau 0.7 --a
 ### new_por + pretrain
 python new_main_por.py --env_name hopper-medium-expert-v2 --tau 0.7 --alpha 3.0 --eval_period 5000 --n_eval_episodes 10 --policy_lr 0.001 --layer_norm --seed 11 --pretrain
 
-python new_main_por.py --env_name hopper-medium-expert-v2 --tau 0.7 --alpha 3.0 --eval_period 5000 --n_eval_episodes 10 --policy_lr 0.001 --layer_norm --seed 11
+python new_main_por.py --env_name hopper-medium-expert-v2 --tau 0.7 --alpha 3.0 --eval_period 5000 --n_eval_episodes 10 --policy_lr 0.001 --layer_norm --seed 11 --load_pretrain
 
 ### new_por
 python new_main_por.py --env_name hopper-medium-expert-v2 --tau 0.7 --alpha 3.0 --eval_period 5000 --n_eval_episodes 10 --policy_lr 0.001 --layer_norm --seed 11

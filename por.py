@@ -216,4 +216,5 @@ class POR(nn.Module):
 
     def load(self, filename):
         self.policy.load_state_dict(torch.load(filename + "-policy_network", map_location=torch.device('cpu')))
+        self.goal_policy.load_state_dict(torch.load(filename + "-goal_network", map_location=torch.device('cpu')))
         print(f"***load the RvS policy model from {filename}***")
