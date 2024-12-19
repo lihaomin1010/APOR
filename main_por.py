@@ -48,8 +48,7 @@ def get_env_and_dataset(env_name, max_episode_steps, normalize):
 
 
 def main(args):
-    wandb.init(project="project_name",
-               entity="your_wandb_id",
+    wandb.init(project="main_por",
                name=f"{args.env_name}",
                config={
                    "env_name": args.env_name,
