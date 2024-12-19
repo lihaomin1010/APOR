@@ -10,7 +10,6 @@ import sys
 import os
 
 import numpy as np
-from sklearn import datasets
 import torch
 import torch.nn as nn
 from IPython import embed
