@@ -23,7 +23,7 @@ zrh：medium-replay
 ### por-q
 --type por_q的时候 这里有个预训练过程，我没搞清，我再看看，大家一起看下 参数里面是pretrain
 
-python main_por.py --env_name hopper-medium-expert-v2 --type por_q --tau 0.7 --alpha 3.0 --eval_period 5000 --n_eval_episodes 10 --policy_lr 0.001 --layer_norm --seed 11
+python main_por.py --env_name hopper-medium-expert-v2 --type por_q --tau 0.7 --alpha 3.0 --eval_period 5000 --n_eval_episodes 10 --policy_lr 0.001 --layer_norm --seed 11 --pretrain
 
 ### por-r
 python main_por.py --env_name hopper-medium-expert-v2 --type por_r --tau 0.7 --alpha 3.0 --eval_period 5000 --n_eval_episodes 10 --policy_lr 0.001 --layer_norm --seed 11
