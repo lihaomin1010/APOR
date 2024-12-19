@@ -2,7 +2,7 @@
 
 https://github.com/lihaomin1010/APOR
 
-改的地方在new_main_por
+改的地方在new_main_por.py
 
 #论文
 iql https://arxiv.org/abs/2110.06169
