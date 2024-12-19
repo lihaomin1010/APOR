@@ -105,7 +105,8 @@ def main(args):
 
     # train por
     else:
-        por.load_value(args.load_value_path)
+        if args.load_value_path != "":
+            por.load_value(args.load_value_path)
         algo_name = f"{args.type}_tau-{args.tau}_alpha-{args.alpha}_normalize-{args.normalize}"
         os.makedirs(f"{args.log_dir}/{args.env_name}/{algo_name}", exist_ok=True)
         eval_log = open(f"{args.log_dir}/{args.env_name}/{algo_name}/seed-{args.seed}.txt", 'w')
