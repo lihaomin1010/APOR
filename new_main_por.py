@@ -134,7 +134,7 @@ if __name__ == '__main__':
     parser.add_argument('--discount', type=float, default=0.99)
     parser.add_argument('--hidden_dim', type=int, default=256)
     parser.add_argument('--n_hidden', type=int, default=2)
-    parser.add_argument('--pretrain_steps', type=int, default=10 ** 5)
+    parser.add_argument('--pretrain_steps', type=int, default=10 ** 6)
     parser.add_argument('--train_steps', type=int, default=10 ** 6)
     parser.add_argument('--batch_size', type=int, default=256)
     parser.add_argument('--tau', type=float, default=0.9)
@@ -154,3 +154,4 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     main(args)
+
