@@ -77,7 +77,7 @@ class POR(nn.Module):
         self.policy_lr_schedule.step()
 
         # wandb
-        if (self.step+1) % 100000 == 0:
+        if (self.step+1) % 5000 == 0:
             wandb.log({"v_loss": v_loss, "v_value": v.mean()}, step=self.step)
         self.step += 1
 
@@ -98,6 +98,54 @@ class POR(nn.Module):
             wandb.log({"b_g_loss": b_g_loss}, step=self.pretrain_step)
 
         self.pretrain_step += 1
+
+    def por_value_update(self, observations, actions, next_observations, rewards, terminals):
+        # the network will NOT update
+        with torch.no_grad():
+            next_v = self.v_target(next_observations)
+
+        # Update value function
+        target_v = rewards + (1. - terminals.float()) * self.discount * next_v
+        vs = self.vf.both(observations)
+        v_loss = sum(asymmetric_l2_loss(target_v - v, self.tau) for v in vs) / len(vs)
+        self.v_optimizer.zero_grad(set_to_none=True)
+        v_loss.backward()
+        self.v_optimizer.step()
+
+        # Update target V network
+        update_exponential_moving_average(self.v_target, self.vf, self.beta)
+
+    def por_policy_update(self, observations, actions, next_observations, rewards, terminals):
+        pred_next_observations = self.goal_policy.act(observations)
+        pred_next_v = self.v_target(pred_next_observations)
+        real_next_v = self.v_target(next_observations)
+
+        adv = real_next_v - pred_next_v
+        weight = torch.exp(self.alpha * adv)
+        weight = torch.clamp_max(weight, EXP_ADV_MAX).detach()
+
+        goal_out = self.goal_policy(observations)
+        g_loss = -goal_out.log_prob(next_observations)
+        g_loss = torch.mean(weight * g_loss)
+        self.goal_policy_optimizer.zero_grad(set_to_none=True)
+        g_loss.backward()
+        self.goal_policy_optimizer.step()
+        self.goal_lr_schedule.step()
+
+        # Update policy
+        policy_out = self.policy(torch.concat([observations, next_observations], dim=1))
+        bc_losses = -policy_out.log_prob(actions)
+        policy_loss = torch.mean(bc_losses)
+        self.policy_optimizer.zero_grad(set_to_none=True)
+        policy_loss.backward()
+        self.policy_optimizer.step()
+        self.policy_lr_schedule.step()
+
+        # wandb
+        if (self.step+1) % 5000 == 0:
+            wandb.log({"g_loss": g_loss, "a_value": policy_loss}, step=self.step)
+        self.step += 1
+
 
     def por_qlearning_update(self, observations, actions, next_observations, rewards, terminals):
         # the network will NOT update
@@ -139,7 +187,7 @@ class POR(nn.Module):
         self.policy_lr_schedule.step()
 
         # wandb
-        if (self.step+1) % 100000 == 0:
+        if (self.step+1) % 5000 == 0:
             wandb.log({"v_loss": v_loss, "v_value": v.mean(), "g_loss1": g_loss1.mean(), "g_loss2": g_loss2.mean()}, step=self.step)
 
         self.step += 1
@@ -151,6 +199,15 @@ class POR(nn.Module):
     def load_pretrain(self, filename):
         self.b_goal_policy.load_state_dict(torch.load(filename + "-behavior_goal_network", map_location=DEFAULT_DEVICE))
         print(f"***load models from {filename}***")
+
+    def save_value(self, filename):
+        torch.save(self.v_target.state_dict(), filename + "-value_network")
+        print(f"***save value models to {filename}***")
+
+    def load_value(self, filename):
+        self.vf.load_state_dict(torch.load(filename + "-value_network", map_location=torch.device('cpu')))
+        self.v_target.load_state_dict(torch.load(filename + "-value_network", map_location=torch.device('cpu')))
+        print(f"***load the value model from {filename}***")
 
     def save(self, filename):
         torch.save(self.policy.state_dict(), filename + "-policy_network")
