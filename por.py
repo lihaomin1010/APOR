@@ -9,34 +9,47 @@ from IPython import embed
 
 from util import DEFAULT_DEVICE, compute_batched, update_exponential_moving_average
 
-
 EXP_ADV_MAX = 100.
 
 
 def asymmetric_l2_loss(u, tau):
     # from paper: "Offline Reinforcement Learning with Implicit Q-Learning" by Ilya et al.
-    return torch.mean(torch.abs(tau - (u < 0).float()) * u**2)
+    return torch.mean(torch.abs(tau - (u < 0).float()) * u ** 2)
 
 
 class POR(nn.Module):
     def __init__(self, vf, policy, goal_policy, max_steps,
-                 tau, alpha, value_lr=1e-4, policy_lr=1e-4, discount=0.99, beta=0.005):
+                 tau, alpha, value_lr=1e-4, policy_lr=1e-4, discount=0.99, beta=0.005, delta_tau=0.02, pretraining=False):
         super().__init__()
         self.vf = vf.to(DEFAULT_DEVICE)
         self.v_target = copy.deepcopy(vf).requires_grad_(False).to(DEFAULT_DEVICE)
         self.policy = policy.to(DEFAULT_DEVICE)
         self.goal_policy = goal_policy.to(DEFAULT_DEVICE)
         self.v_optimizer = torch.optim.Adam(self.vf.parameters(), lr=value_lr)
+
+        self.vf_2 = copy.deepcopy(vf).to(DEFAULT_DEVICE)
+        self.v_target_2 = copy.deepcopy(vf).requires_grad_(False).to(DEFAULT_DEVICE)
+        self.v_optimizer_2 = torch.optim.Adam(self.vf_2.parameters(), lr=value_lr)
+
+
         self.policy_optimizer = torch.optim.Adam(self.policy.parameters(), lr=policy_lr)
         self.policy_lr_schedule = CosineAnnealingLR(self.policy_optimizer, max_steps)
         self.goal_policy_optimizer = torch.optim.Adam(self.goal_policy.parameters(), lr=policy_lr)
         self.goal_lr_schedule = CosineAnnealingLR(self.goal_policy_optimizer, max_steps)
+
         self.tau = tau
+        self.tau_2 = tau+delta_tau
+        self.pretraining = pretraining
+
         self.alpha = alpha
         self.discount = discount
         self.beta = beta
         self.step = 0
         self.pretrain_step = 0
+        self.count = 0.
+
+        self.gamma = 1.
+        self.gamma_bound = 0.0000015
 
     def por_residual_update(self, observations, actions, next_observations, rewards, terminals):
         # the network will NOT update
@@ -67,6 +80,7 @@ class POR(nn.Module):
         self.goal_policy_optimizer.step()
         self.goal_lr_schedule.step()
 
+
         # Update policy
         policy_out = self.policy(torch.concat([observations, next_observations], dim=1))
         bc_losses = -policy_out.log_prob(actions)
@@ -77,7 +91,7 @@ class POR(nn.Module):
         self.policy_lr_schedule.step()
 
         # wandb
-        if (self.step+1) % 5000 == 0:
+        if (self.step + 1) % 5000 == 0:
             wandb.log({"v_loss": v_loss, "v_value": v.mean()}, step=self.step)
         self.step += 1
 
@@ -94,7 +108,7 @@ class POR(nn.Module):
         b_g_loss.backward()
         self.b_goal_policy_optimizer.step()
 
-        if (self.pretrain_step+1) % 10000 == 0:
+        if (self.pretrain_step + 1) % 10000 == 0:
             wandb.log({"b_g_loss": b_g_loss}, step=self.pretrain_step)
 
         self.pretrain_step += 1
@@ -114,6 +128,32 @@ class POR(nn.Module):
 
         # Update target V network
         update_exponential_moving_average(self.v_target, self.vf, self.beta)
+
+        if (self.step + 1) % 5000 == 0:
+            wandb.log({"v_loss": v_loss, "v_mean": sum(vs[0])}, step=self.step)
+        if self.pretraining:
+            self.step += 1
+
+
+    def por_value_update_2(self, observations, actions, next_observations, rewards, terminals):
+        # the network will NOT update
+        with torch.no_grad():
+            next_v = self.v_target_2(next_observations)
+
+        # Update value function
+        target_v_2 = rewards + (1. - terminals.float()) * self.discount * next_v
+        vs = self.vf_2.both(observations)
+        v_loss = sum(asymmetric_l2_loss(target_v_2 - v, self.tau_2) for v in vs) / len(vs)
+        self.v_optimizer_2.zero_grad(set_to_none=True)
+        v_loss.backward()
+        self.v_optimizer_2.step()
+
+        # Update target V network
+        update_exponential_moving_average(self.v_target_2, self.vf_2, self.beta)
+
+        if (self.step + 1) % 5000 == 0:
+            wandb.log({"v_loss_2": v_loss, "v_mean_2": sum(vs[0])}, step=self.step)
+
 
     def por_policy_update(self, observations, actions, next_observations, rewards, terminals):
         pred_next_observations = self.goal_policy.act(observations)
@@ -142,10 +182,135 @@ class POR(nn.Module):
         self.policy_lr_schedule.step()
 
         # wandb
-        if (self.step+1) % 5000 == 0:
+        if (self.step + 1) % 5000 == 0:
             wandb.log({"g_loss": g_loss, "a_value": policy_loss}, step=self.step)
         self.step += 1
 
+    def por_policy_update_2(self, observations, actions, next_observations, rewards, terminals):
+        pred_next_observations = self.goal_policy.act(observations)
+        pred_next_v = self.v_target(pred_next_observations)
+        real_next_v = self.v_target(next_observations)
+
+        adv = real_next_v - pred_next_v
+        weight_1 = torch.exp(self.alpha * adv)
+        # weight = torch.clamp_max(weight, EXP_ADV_MAX).detach()
+
+        with torch.no_grad():
+            next_v = self.v_target(next_observations)
+        # Update value function
+        target_v = rewards + (1. - terminals.float()) * self.discount * next_v
+        v = self.vf(observations)
+        adv_2 = target_v - v
+        weight_2 = torch.exp(self.alpha * adv_2)
+
+        weight = torch.clamp_max(self.gamma * weight_1 + (1 - self.gamma) * weight_2, EXP_ADV_MAX).detach()
+        if self.gamma >= self.gamma_bound:
+            self.gamma -= self.gamma_bound
+
+        goal_out = self.goal_policy(observations)
+        g_loss = -goal_out.log_prob(next_observations)
+        g_loss = torch.mean((weight) * g_loss)
+        self.goal_policy_optimizer.zero_grad(set_to_none=True)
+        g_loss.backward()
+        self.goal_policy_optimizer.step()
+        self.goal_lr_schedule.step()
+
+        # Update policy
+        policy_out = self.policy(torch.concat([observations, next_observations], dim=1))
+        bc_losses = -policy_out.log_prob(actions)
+        policy_loss = torch.mean(bc_losses)
+        self.policy_optimizer.zero_grad(set_to_none=True)
+        policy_loss.backward()
+        self.policy_optimizer.step()
+        self.policy_lr_schedule.step()
+
+        # wandb
+        if (self.step + 1) % 5000 == 0:
+            wandb.log({"g_loss": g_loss, "a_value": policy_loss}, step=self.step)
+        self.step += 1
+
+    def por_policy_update_3(self, observations, actions, next_observations, rewards, terminals):
+        pred_next_observations = self.goal_policy.act(observations)
+        pred_next_v = self.v_target(pred_next_observations)
+        real_next_v = self.v_target(next_observations)
+
+        adv_0 = real_next_v - pred_next_v
+
+        #去掉负优势
+        adv_1 = torch.clamp_min(adv_0, 0.)
+
+        #保留负优势
+        adv_2 = torch.clamp_min(adv_1-adv_0, 0.)
+
+        weight_1 = torch.exp(self.alpha * adv_1) - 1.
+        # weight = torch.clamp_max(weight, EXP_ADV_MAX).detach()
+
+        weight = torch.clamp_max(weight_1, EXP_ADV_MAX).detach()
+
+        goal_out = self.goal_policy(observations)
+        g_loss = -goal_out.log_prob(next_observations)
+        g_loss = torch.mean((weight) * g_loss)
+        self.goal_policy_optimizer.zero_grad(set_to_none=True)
+        g_loss.backward()
+        self.goal_policy_optimizer.step()
+        self.goal_lr_schedule.step()
+
+        # Update policy
+        policy_out = self.policy(torch.concat([observations, next_observations], dim=1))
+        bc_losses = -policy_out.log_prob(actions)
+        policy_loss = torch.mean(bc_losses)
+        self.policy_optimizer.zero_grad(set_to_none=True)
+        policy_loss.backward()
+        self.policy_optimizer.step()
+        self.policy_lr_schedule.step()
+
+        # wandb
+        if (self.step + 1) % 5000 == 0:
+            wandb.log({"g_loss": g_loss, "a_value": policy_loss}, step=self.step)
+        self.step += 1
+
+
+    def por_policy_update_4(self, observations, actions, next_observations, rewards, terminals):
+        pred_next_observations = self.goal_policy.act(observations)
+        pred_next_v = self.v_target(pred_next_observations)
+        real_next_v = self.v_target_2(next_observations)
+
+        adv_0 = real_next_v - pred_next_v
+
+        #去掉负优势
+        adv_1 = torch.clamp_min(adv_0, 0.)
+
+        self.count += torch.count_nonzero(adv_1)/256.
+
+        #保留负优势
+        #adv_2 = torch.clamp_min(adv_1-adv_0, 0.)
+
+        weight_1 = torch.exp(self.alpha * adv_1) - 1.
+
+        weight = torch.clamp_max(weight_1, EXP_ADV_MAX).detach()
+
+        goal_out = self.goal_policy(observations)
+        g_loss = -goal_out.log_prob(next_observations)
+        g_loss = torch.mean((weight) * g_loss)
+        self.goal_policy_optimizer.zero_grad(set_to_none=True)
+        g_loss.backward()
+        self.goal_policy_optimizer.step()
+        self.goal_lr_schedule.step()
+
+        # Update policy
+        policy_out = self.policy(torch.concat([observations, next_observations], dim=1))
+        bc_losses = -policy_out.log_prob(actions)
+        policy_loss = torch.mean(bc_losses)
+        self.policy_optimizer.zero_grad(set_to_none=True)
+        policy_loss.backward()
+        self.policy_optimizer.step()
+        self.policy_lr_schedule.step()
+
+        # wandb
+        if (self.step + 1) % 5000 == 0:
+            wandb.log({"g_loss": g_loss, "a_value": policy_loss, "non_zero": self.count/5000}, step=self.step)
+            self.count = 0.
+        self.step += 1
 
     def por_qlearning_update(self, observations, actions, next_observations, rewards, terminals):
         # the network will NOT update
@@ -170,7 +335,7 @@ class POR(nn.Module):
         g_sample = goal_out.rsample()
         g_loss1 = -self.vf(g_sample)
         g_loss2 = -b_goal_out.log_prob(g_sample).mean()
-        lmbda = self.alpha/g_loss1.abs().mean().detach()
+        lmbda = self.alpha / g_loss1.abs().mean().detach()
         g_loss = torch.mean(lmbda * g_loss1 + g_loss2)
         self.goal_policy_optimizer.zero_grad(set_to_none=True)
         g_loss.backward()
@@ -187,34 +352,43 @@ class POR(nn.Module):
         self.policy_lr_schedule.step()
 
         # wandb
-        if (self.step+1) % 5000 == 0:
-            wandb.log({"v_loss": v_loss, "v_value": v.mean(), "g_loss1": g_loss1.mean(), "g_loss2": g_loss2.mean()}, step=self.step)
+        if (self.step + 1) % 5000 == 0:
+            wandb.log({"v_loss": v_loss, "v_value": v.mean(), "g_loss1": g_loss1.mean(), "g_loss2": g_loss2.mean()},
+                      step=self.step)
 
         self.step += 1
 
     def save_pretrain(self, filename):
         torch.save(self.b_goal_policy.state_dict(), filename + "-behavior_goal_network")
-        print(f"***save models to {filename}***")
+        #print(f"***save models to {filename}***")
 
     def load_pretrain(self, filename):
         self.b_goal_policy.load_state_dict(torch.load(filename + "-behavior_goal_network", map_location=DEFAULT_DEVICE))
-        print(f"***load models from {filename}***")
+        #print(f"***load models from {filename}***")
 
     def save_value(self, filename):
         torch.save(self.v_target.state_dict(), filename + "-value_network")
-        print(f"***save value models to {filename}***")
+        #print(f"***save value models to {filename}***")
 
     def load_value(self, filename):
         self.vf.load_state_dict(torch.load(filename + "-value_network", map_location=torch.device('cpu')))
         self.v_target.load_state_dict(torch.load(filename + "-value_network", map_location=torch.device('cpu')))
-        print(f"***load the value model from {filename}***")
+        #print(f"***load the value model from {filename}***")
 
+    def save_value_2(self, filename):
+        torch.save(self.v_target_2.state_dict(), filename + "-value_network")
+        #print(f"***save value models to {filename}***")
+
+    def load_value_2(self, filename):
+        self.vf_2.load_state_dict(torch.load(filename + "-value_network", map_location=torch.device('cpu')))
+        self.v_target_2.load_state_dict(torch.load(filename + "-value_network", map_location=torch.device('cpu')))
+        #print(f"***load the value model from {filename}***")
     def save(self, filename):
         torch.save(self.policy.state_dict(), filename + "-policy_network")
         torch.save(self.goal_policy.state_dict(), filename + "-goal_network")
-        print(f"***save models to {filename}***")
+        #print(f"***save models to {filename}***")
 
     def load(self, filename):
         self.policy.load_state_dict(torch.load(filename + "-policy_network", map_location=torch.device('cpu')))
         self.goal_policy.load_state_dict(torch.load(filename + "-goal_network", map_location=torch.device('cpu')))
-        print(f"***load the RvS policy model from {filename}***")
+        #print(f"***load the RvS policy model from {filename}***")

@@ -15,6 +15,7 @@ from value_functions import TwinV
 from util import return_range, set_seed, Log, sample_batch, torchify, evaluate_por
 import wandb
 import time
+import datetime
 
 
 def get_env_and_dataset(env_name, max_episode_steps, normalize):
@@ -48,8 +49,13 @@ def get_env_and_dataset(env_name, max_episode_steps, normalize):
 
 
 def main(args):
-    wandb.init(project="new_main_por",
-               name=f"{args.env_name}",
+    algo_name = f"tau-{args.tau}_alpha-{args.alpha}"
+    os.makedirs(f"{args.log_dir}/{args.env_name}/{algo_name}", exist_ok=True)
+    os.makedirs(f"{args.model_dir}/{args.env_name}", exist_ok=True)
+    time_str = datetime.datetime.now().strftime("%Y%m%d-%H%M")
+    print("train begin at {} !".format(time_str))
+    wandb.init(project=f"new_main_por-{algo_name}-{args.env_name}",
+               name=f"{time_str}",
                config={
                    "env_name": args.env_name,
                    "normalize": args.normalize,
@@ -83,6 +89,8 @@ def main(args):
         discount=args.discount,
         value_lr=args.value_lr,
         policy_lr=args.policy_lr,
+        delta_tau=args.delta_tau,
+        pretraining=args.pretrain,
     )
 
     def eval_por(step):
@@ -96,31 +104,49 @@ def main(args):
 
         return normalized_returns.mean()
 
-    # pretrain behavior goal policy if needed
+    def save_all(path):
+        por.save(path)
+        por.save_value(path)
+        por.save_value_2(f"{path}-2")
+
+    def load_all(path):
+        por.load(path)
+        por.load_value(path)
+        por.load_value_2(f"{path}-2")
+
     if args.pretrain:
-        algo_name = f"{args.type}_tau-{args.tau}_alpha-{args.alpha}_normalize-{args.normalize}"
         for step in trange(args.pretrain_steps):
-            por.por_value_update(**sample_batch(dataset, args.batch_size))
-        por.save_value(f"{args.model_dir}/{args.env_name}/{algo_name}")
+            d_sample = sample_batch(dataset, args.batch_size)
+            por.por_value_update_2(**d_sample)
+            por.por_value_update(**d_sample)
+
+            if (step + 1) % args.eval_period == 0:
+                save_all(f"{args.model_dir}/{args.env_name}/{algo_name}-{time_str}")
 
     # train por
     else:
-        algo_name = f"{args.type}_tau-{args.tau}_alpha-{args.alpha}_normalize-{args.normalize}"
         os.makedirs(f"{args.log_dir}/{args.env_name}/{algo_name}", exist_ok=True)
         eval_log = open(f"{args.log_dir}/{args.env_name}/{algo_name}/seed-{args.seed}.txt", 'w')
         if args.load_pretrain:
-            por.load_value(f"{args.model_dir}/{args.env_name}/{algo_name}")
+            load_all(f"{args.model_dir}/{args.env_name}/{algo_name}-{args.load_timestr}")
+
         for step in trange(args.train_steps):
-            por.por_value_update(**sample_batch(dataset, args.batch_size))
-            por.por_policy_update(**sample_batch(dataset, args.batch_size))
+            d_sample = sample_batch(dataset, args.batch_size)
+            if args.update_value:
+                por.por_value_update_2(**d_sample)
+                por.por_value_update(**d_sample)
+
+            por.por_policy_update_3(**d_sample)
+
             if (step + 1) % args.eval_period == 0:
                 average_returns = eval_por(step)
                 eval_log.write(f'{step + 1}\t{average_returns}\n')
                 eval_log.flush()
+
+                save_all(f"{args.model_dir}/{args.env_name}/{algo_name}-{time_str}")
+
         eval_log.close()
         os.makedirs(f"{args.model_dir}/{args.env_name}", exist_ok=True)
-        por.save(f"{args.model_dir}/{args.env_name}/{algo_name}")
-        por.save_value(f"{args.model_dir}/{args.env_name}/{algo_name}")
 
 
 if __name__ == '__main__':
@@ -138,6 +164,7 @@ if __name__ == '__main__':
     parser.add_argument('--train_steps', type=int, default=10 ** 6)
     parser.add_argument('--batch_size', type=int, default=256)
     parser.add_argument('--tau', type=float, default=0.9)
+    parser.add_argument('--delta_tau', type=float, default=0.01)
     parser.add_argument('--value_lr', type=float, default=1e-4)
     parser.add_argument('--policy_lr', type=float, default=1e-4)
     parser.add_argument('--alpha', type=float, default=10.0)
@@ -149,6 +176,8 @@ if __name__ == '__main__':
     parser.add_argument("--type", type=str, choices=['por_r', 'por_q'], default='new_por')
     parser.add_argument("--pretrain", action='store_true')
     parser.add_argument("--load_pretrain", action='store_true')
+    parser.add_argument("--load_timestr", type=str, default="")
+    parser.add_argument("--update_value", action='store_true')
     # parser.add_argument("--ablation_type", type=str, required=True, choices=['None', 'generlization'])
     now = time.strftime("%Y%m%d_%H%M%S", time.localtime())
     args = parser.parse_args()
