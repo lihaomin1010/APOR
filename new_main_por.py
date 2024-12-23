@@ -136,7 +136,7 @@ def main(args):
                 por.por_value_update_2(**d_sample)
                 por.por_value_update(**d_sample)
 
-            por.por_policy_update_3(**d_sample)
+            por.por_policy_update_4(**d_sample)
 
             if (step + 1) % args.eval_period == 0:
                 average_returns = eval_por(step)
