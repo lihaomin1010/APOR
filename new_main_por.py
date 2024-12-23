@@ -49,7 +49,7 @@ def get_env_and_dataset(env_name, max_episode_steps, normalize):
 
 
 def main(args):
-    algo_name = f"tau-{args.tau}_alpha-{args.alpha}"
+    algo_name = f"tau-{args.tau}_alpha-{args.alpha}_delta-{args.delta_tau}"
     os.makedirs(f"{args.log_dir}/{args.env_name}/{algo_name}", exist_ok=True)
     os.makedirs(f"{args.model_dir}/{args.env_name}", exist_ok=True)
     time_str = datetime.datetime.now().strftime("%Y%m%d-%H%M")
